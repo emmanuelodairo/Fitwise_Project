@@ -1,8 +1,9 @@
-# Fitwise_Project
-Full-stack workout tracking and training insights application built with React, FastAPI, and SQLite, featuring authentication, analytics, and personalized workout recommendations.
 # FitWise
 
-FitWise is a full-stack workout tracking and training insights application designed to help users log workouts, track performance, and receive personalized recommendations based on their training patterns.
+Full-stack workout tracking and training insights application built with React, FastAPI, and SQLite, featuring authentication, analytics, and personalized workout recommendations.
+
+## Overview
+FitWise allows users to log workouts, track performance, and receive personalized recommendations based on their training patterns.
 
 ## Tech Stack
 - Frontend: React (Vite)
@@ -15,13 +16,27 @@ FitWise is a full-stack workout tracking and training insights application desig
 - Automatic exercise classification (muscle groups)
 - Volume and personal record tracking
 - Progression charts
-- Training insights and analysis
+- Training insights and analytics
 - Personalized workout recommendations
 - User authentication and multi-user support
 
 ## How to Run
 
 ### Backend
-```bash
-cd backend
+bash
+`` cd backend ``
 python -m uvicorn main:app --reload
+
+### Frontend
+cd frontend
+npm install
+npm run dev
+
+Future Improvements
+Mobile app version (React Native)
+AI-based workout recommendations
+Improved analytics and visualization
+Enhanced authentication (password reset, sessions)
+Author
+
+Emmanuel Dairo
