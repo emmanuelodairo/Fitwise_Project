@@ -24,13 +24,13 @@ FitWise allows users to log workouts, track performance, and receive personalize
 
 ### Backend
 bash
-`` cd backend ``
-python -m uvicorn main:app --reload
+`` cd backend
+python -m uvicorn main:app --reload ``
 
 ### Frontend
-cd frontend
+`` cd frontend
 npm install
-npm run dev
+npm run dev ``
 
 Future Improvements
 Mobile app version (React Native)
