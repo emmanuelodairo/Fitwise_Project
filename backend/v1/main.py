@@ -47,19 +47,15 @@ app = FastAPI(title="FitWise API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Secret key for signing JWTs.
-# ⚠️  Without a fixed key, tokens break on every server restart (new random key = old tokens invalid).
-# Fix: run this once in your terminal, then restart uvicorn:
+# 
 #
-#     export FITWISE_SECRET_KEY="pick-any-long-string-and-keep-it"
-#
-# In production: always use a proper environment variable, never the default.
 SECRET_KEY = os.environ.get("FITWISE_SECRET_KEY", secrets.token_hex(32))
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_MINUTES = 60 * 24 * 7   # tokens last 1 week
