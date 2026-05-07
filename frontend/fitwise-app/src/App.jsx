@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 
-const API_URL = "https://fitwise-project.onrender.com";
+const API_URL = "https://fitwise-project.onrender.com"; // v2
 const EMPTY_FORM = { exercise: "", sets: "", reps: "", weight: "", notes: "" };
 
 // =============================================================================
