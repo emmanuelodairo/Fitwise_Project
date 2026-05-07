@@ -1,9 +1,12 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 
 const API_URL = "http://127.0.0.1:8000";
-const EMPTY_FORM = { user: "", exercise: "", sets: "", reps: "", weight: "", notes: "" };
+const EMPTY_FORM = { exercise: "", sets: "", reps: "", weight: "", notes: "" };
 
-// ─── Keyword classifier ────────────────────────────────────────────────────────
+// =============================================================================
+// EXERCISE CLASSIFIER (mirrors backend — used for instant preview while typing)
+// =============================================================================
+
 const KEYWORD_RULES = [
   ["bench press","Chest"],["chest press","Chest"],["chest fly","Chest"],
   ["incline press","Chest"],["decline press","Chest"],["pec deck","Chest"],
@@ -29,8 +32,8 @@ const KEYWORD_RULES = [
   ["cable curl","Arms"],["barbell curl","Arms"],["ez bar curl","Arms"],
   ["bicep curl","Arms"],["biceps curl","Arms"],["close grip bench","Arms"],
   ["overhead extension","Arms"],["tricep pushdown","Arms"],
-  ["tricep extension","Arms"],["tricep dip","Arms"],["tricep","Arms"],
-  ["triceps","Arms"],["curl","Arms"],
+  ["tricep extension","Arms"],["tricep dip","Arms"],
+  ["tricep","Arms"],["triceps","Arms"],["curl","Arms"],
   ["ab wheel","Core"],["dragon flag","Core"],["hanging leg raise","Core"],
   ["leg raise","Core"],["cable crunch","Core"],["russian twist","Core"],
   ["pallof press","Core"],["wood chop","Core"],["hollow hold","Core"],
@@ -42,29 +45,36 @@ const KEYWORD_RULES = [
   ["stair","Cardio"],["cycling","Cardio"],["stationary bike","Cardio"],
   ["burpee","Cardio"],["sprint","Cardio"],["running","Cardio"],
   ["jogging","Cardio"],["swimming","Cardio"],["hiit","Cardio"],
-  ["walk","Cardio"],["run","Cardio"],["bike","Cardio"],["swim","Cardio"],
-  ["jog","Cardio"],
+  ["walk","Cardio"],["run","Cardio"],["bike","Cardio"],["swim","Cardio"],["jog","Cardio"],
 ];
 
 function classifyExercise(name) {
-  const lowered = name.toLowerCase().replace(/[-_/]/g, " ").trim();
-  for (const [keyword, group] of KEYWORD_RULES) {
-    if (lowered.includes(keyword)) return group;
+  const l = name.toLowerCase().replace(/[-_/]/g, " ").trim();
+  for (const [kw, g] of KEYWORD_RULES) {
+    if (l.includes(kw)) return g;
   }
   return "Other";
 }
 
-// ─── Constants ─────────────────────────────────────────────────────────────────
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
 const GROUP_COLORS = {
   Chest: "#ef4444", Legs: "#f97316", Back: "#3b82f6", Shoulders: "#8b5cf6",
   Arms: "#ec4899", Core: "#14b8a6", Cardio: "#f59e0b", Other: "#6b7280",
 };
-const DAY_LABELS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// =============================================================================
+// UTILITIES
+// =============================================================================
 
 function parseUTC(iso) {
   if (!iso) return new Date(0);
-  const str = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
-  return new Date(str);
+  const s = iso.endsWith("Z") || iso.includes("+") ? iso : iso + "Z";
+  return new Date(s);
 }
 function formatDate(iso) {
   if (!iso) return "";
@@ -78,60 +88,93 @@ function fmtWeight(w) {
   if (!w || w === 0) return "BW";
   return `${w % 1 === 0 ? w : w.toFixed(1)} lbs`;
 }
-// Epley 1-rep max formula
 function epley1RM(weight, reps) {
-  if (!weight || weight === 0 || reps === 0) return 0;
+  if (!weight || reps === 0) return 0;
   if (reps === 1) return weight;
   return Math.round(weight * (1 + reps / 30));
 }
 
-// ─── Theme tokens ──────────────────────────────────────────────────────────────
+// =============================================================================
+// SESSION STORAGE (token + user saved in localStorage)
+// =============================================================================
+
+const TOKEN_KEY = "fw_token";
+const USER_KEY  = "fw_user";
+
+function saveSession(token, user) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+function loadSession() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  const raw   = localStorage.getItem(USER_KEY);
+  return { token, user: raw ? JSON.parse(raw) : null };
+}
+function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
+// =============================================================================
+// API HELPER — automatically attaches the Authorization header
+// =============================================================================
+
+async function apiFetch(path, token, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return fetch(`${API_URL}${path}`, { ...options, headers });
+}
+
+// =============================================================================
+// THEME
+// =============================================================================
+
 function getThemeVars(dark) {
   return dark ? {
-    "--bg-page":    "#0d0d14",
-    "--bg-card":    "rgba(255,255,255,0.03)",
-    "--bg-card-hov":"rgba(255,255,255,0.06)",
-    "--bg-input":   "rgba(255,255,255,0.05)",
-    "--border":     "rgba(255,255,255,0.07)",
-    "--border-in":  "rgba(255,255,255,0.1)",
-    "--text":       "#ffffff",
-    "--text-sec":   "rgba(255,255,255,0.45)",
-    "--text-ter":   "rgba(255,255,255,0.25)",
-    "--header-bg":  "rgba(13,13,20,0.85)",
-    "--accent":     "#a3e635",
-    "--accent-dk":  "#65a30d",
-    "--accent-text":"#0d1117",
-    "--tab-active-bg": "rgba(163,230,53,0.15)",
-    "--tab-active-clr":"#a3e635",
-    "--tab-clr":    "rgba(255,255,255,0.4)",
-    "--error-bg":   "rgba(239,68,68,0.1)",
-    "--error-bd":   "rgba(239,68,68,0.3)",
-    "--select-bg":  "#1a1a2e",
+    "--bg-page":         "#0d0d14",
+    "--bg-card":         "rgba(255,255,255,0.03)",
+    "--bg-card-hov":     "rgba(255,255,255,0.06)",
+    "--bg-input":        "rgba(255,255,255,0.05)",
+    "--border":          "rgba(255,255,255,0.07)",
+    "--border-in":       "rgba(255,255,255,0.1)",
+    "--text":            "#ffffff",
+    "--text-sec":        "rgba(255,255,255,0.45)",
+    "--text-ter":        "rgba(255,255,255,0.25)",
+    "--header-bg":       "rgba(13,13,20,0.85)",
+    "--accent":          "#a3e635",
+    "--accent-dk":       "#65a30d",
+    "--accent-text":     "#0d1117",
+    "--tab-active-bg":   "rgba(163,230,53,0.15)",
+    "--tab-active-clr":  "#a3e635",
+    "--tab-clr":         "rgba(255,255,255,0.4)",
+    "--error-bg":        "rgba(239,68,68,0.1)",
+    "--error-bd":        "rgba(239,68,68,0.3)",
   } : {
-    "--bg-page":    "#f0f2f5",
-    "--bg-card":    "#ffffff",
-    "--bg-card-hov":"#f8fafc",
-    "--bg-input":   "#ffffff",
-    "--border":     "rgba(0,0,0,0.08)",
-    "--border-in":  "rgba(0,0,0,0.12)",
-    "--text":       "#0d1117",
-    "--text-sec":   "rgba(0,0,0,0.5)",
-    "--text-ter":   "rgba(0,0,0,0.3)",
-    "--header-bg":  "rgba(240,242,245,0.9)",
-    "--accent":     "#65a30d",
-    "--accent-dk":  "#3f6212",
-    "--accent-text":"#ffffff",
-    "--tab-active-bg": "rgba(101,163,13,0.12)",
-    "--tab-active-clr":"#3f6212",
-    "--tab-clr":    "rgba(0,0,0,0.4)",
-    "--error-bg":   "rgba(239,68,68,0.08)",
-    "--error-bd":   "rgba(239,68,68,0.25)",
-    "--select-bg":  "#ffffff",
+    "--bg-page":         "#f0f2f5",
+    "--bg-card":         "#ffffff",
+    "--bg-card-hov":     "#f8fafc",
+    "--bg-input":        "#ffffff",
+    "--border":          "rgba(0,0,0,0.08)",
+    "--border-in":       "rgba(0,0,0,0.12)",
+    "--text":            "#0d1117",
+    "--text-sec":        "rgba(0,0,0,0.5)",
+    "--text-ter":        "rgba(0,0,0,0.3)",
+    "--header-bg":       "rgba(240,242,245,0.9)",
+    "--accent":          "#65a30d",
+    "--accent-dk":       "#3f6212",
+    "--accent-text":     "#ffffff",
+    "--tab-active-bg":   "rgba(101,163,13,0.12)",
+    "--tab-active-clr":  "#3f6212",
+    "--tab-clr":         "rgba(0,0,0,0.4)",
+    "--error-bg":        "rgba(239,68,68,0.08)",
+    "--error-bd":        "rgba(239,68,68,0.25)",
   };
 }
 
-// ─── Styles factory (theme-aware) ──────────────────────────────────────────────
-function makeStyles(dark) {
+function makeStyles() {
   return {
     input: {
       background: "var(--bg-input)", border: "1px solid var(--border-in)",
@@ -151,7 +194,226 @@ function makeStyles(dark) {
   };
 }
 
-// ─── Sub-components ────────────────────────────────────────────────────────────
+// =============================================================================
+// AUTH SCREEN  (shown when not logged in)
+// =============================================================================
+
+function AuthScreen({ onAuth, dark }) {
+  const [mode, setMode]       = useState("login"); // "login" | "register"
+  const [form, setForm]       = useState({ username: "", password: "", display_name: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState(null);
+  // After a successful register, show a brief success notice
+  const [registered, setRegistered] = useState(false);
+
+  const S  = makeStyles();
+  const tv = getThemeVars(dark);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+
+    try {
+      // ── REGISTER ──────────────────────────────────────────────────────────
+      if (mode === "register") {
+        const res = await fetch(`${API_URL}/auth/register`, {
+          method:  "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username:     form.username,
+            password:     form.password,
+            display_name: form.display_name || undefined,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json();
+          // Surface specific backend errors clearly
+          if (res.status === 409) throw new Error("Username already taken — try a different one");
+          if (res.status === 422) throw new Error("Invalid username — use only letters, numbers, _ and -");
+          throw new Error(d.detail || "Registration failed");
+        }
+        // Switch to login and show success message
+        setRegistered(true);
+        setMode("login");
+        setForm(f => ({ ...f, password: "" }));
+        return;
+      }
+
+      // ── LOGIN ─────────────────────────────────────────────────────────────
+      // IMPORTANT: login must use application/x-www-form-urlencoded, not JSON.
+      // This is the OAuth2 standard that FastAPI expects.
+      const body = new URLSearchParams({
+        username: form.username,
+        password: form.password,
+      });
+      const res = await fetch(`${API_URL}/auth/login`, {
+        method:  "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        if (res.status === 401) throw new Error("Incorrect username or password");
+        if (res.status === 422) throw new Error("Please fill in both username and password");
+        throw new Error(d.detail || "Login failed — is the server running?");
+      }
+      const data = await res.json();
+      const user = { username: data.username, display_name: data.display_name };
+      saveSession(data.access_token, user);
+      onAuth(data.access_token, user);
+
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{
+      ...tv, minHeight: "100vh", background: "var(--bg-page)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "'DM Sans','Segoe UI',sans-serif",
+    }}>
+      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+      <div style={{ width: "100%", maxWidth: "420px", padding: "0 24px" }}>
+
+        {/* Logo */}
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", justifyContent: "center", marginBottom: "40px" }}>
+          <div style={{
+            width: "36px", height: "36px", borderRadius: "10px",
+            background: "linear-gradient(135deg, var(--accent), var(--accent-dk))",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M6.5 6.5h11M6.5 17.5h11M3 12h18M8 4v16M16 4v16"/>
+            </svg>
+          </div>
+          <span style={{ fontWeight: 800, fontSize: "24px", letterSpacing: "-0.5px", color: "var(--text)" }}>FitWise</span>
+        </div>
+
+        <div style={{ ...S.card, padding: "32px" }}>
+          <h2 style={{ fontSize: "20px", fontWeight: 800, margin: "0 0 4px", color: "var(--text)", letterSpacing: "-0.4px" }}>
+            {mode === "login" ? "Welcome back" : "Create your account"}
+          </h2>
+          <p style={{ color: "var(--text-sec)", fontSize: "13px", margin: "0 0 24px" }}>
+            {mode === "login" ? "Log in to your FitWise account" : "Start tracking your training today"}
+          </p>
+
+          {/* Success notice after registering */}
+          {registered && mode === "login" && (
+            <div style={{
+              background: "rgba(163,230,53,0.1)", border: "1px solid rgba(163,230,53,0.3)",
+              borderRadius: "8px", padding: "10px 14px", marginBottom: "16px",
+              color: "var(--accent)", fontSize: "13px",
+            }}>
+              Account created! Log in below.
+            </div>
+          )}
+
+          {/* Error message */}
+          {error && (
+            <div style={{
+              background: "var(--error-bg)", border: "1px solid var(--error-bd)",
+              borderRadius: "8px", padding: "10px 14px", marginBottom: "16px",
+              color: "#ef4444", fontSize: "13px",
+            }}>
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit}>
+            <div style={{ display: "grid", gap: "12px" }}>
+
+              {/* Display name — register only */}
+              {mode === "register" && (
+                <div>
+                  <label style={S.label}>
+                    Display name <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}>(optional)</span>
+                  </label>
+                  <input
+                    placeholder="e.g. Alex Johnson"
+                    value={form.display_name}
+                    onChange={e => setForm({ ...form, display_name: e.target.value })}
+                    style={S.input}
+                    onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                    onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
+                  />
+                </div>
+              )}
+
+              {/* Username */}
+              <div>
+                <label style={S.label}>Username</label>
+                <input
+                  required
+                  placeholder="your_username"
+                  value={form.username}
+                  autoComplete="username"
+                  onChange={e => setForm({ ...form, username: e.target.value })}
+                  style={S.input}
+                  onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                  onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
+                />
+              </div>
+
+              {/* Password */}
+              <div>
+                <label style={S.label}>
+                  Password{" "}
+                  {mode === "register" && (
+                    <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}>(min. 6 characters)</span>
+                  )}
+                </label>
+                <input
+                  required
+                  type="password"
+                  placeholder="••••••••"
+                  value={form.password}
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
+                  onChange={e => setForm({ ...form, password: e.target.value })}
+                  style={S.input}
+                  onFocus={e => e.target.style.borderColor = "var(--accent)"}
+                  onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
+                />
+              </div>
+
+              {/* Submit */}
+              <button type="submit" disabled={loading} style={{
+                background: "linear-gradient(135deg, var(--accent), var(--accent-dk))",
+                color: "var(--accent-text)", border: "none", borderRadius: "12px",
+                padding: "13px", fontSize: "14px", fontWeight: 700,
+                cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? 0.7 : 1, marginTop: "4px", transition: "opacity 0.15s",
+              }}>
+                {loading
+                  ? (mode === "login" ? "Logging in…" : "Creating account…")
+                  : (mode === "login" ? "Log in" : "Create account")}
+              </button>
+            </div>
+          </form>
+
+          {/* Toggle login / register */}
+          <p style={{ textAlign: "center", fontSize: "13px", color: "var(--text-sec)", margin: "20px 0 0" }}>
+            {mode === "login" ? "Don't have an account? " : "Already have an account? "}
+            <button
+              onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); setRegistered(false); }}
+              style={{ background: "none", border: "none", color: "var(--accent)", fontWeight: 700, cursor: "pointer", fontSize: "13px", padding: 0 }}
+            >
+              {mode === "login" ? "Sign up" : "Log in"}
+            </button>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// SHARED UI COMPONENTS
+// =============================================================================
+
 function WeekGrid({ workouts }) {
   const today = new Date();
   const days = Array.from({ length: 7 }, (_, i) => {
@@ -159,12 +421,12 @@ function WeekGrid({ workouts }) {
     d.setDate(today.getDate() - (6 - i));
     return d;
   });
-  const daySet = new Set(workouts.map((w) => utcDateKey(w.created_at)));
+  const daySet = new Set(workouts.map(w => utcDateKey(w.created_at)));
   return (
     <div style={{ display: "flex", gap: "6px" }}>
       {days.map((d, i) => {
-        const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
-        const active = daySet.has(key);
+        const key    = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+        const active  = daySet.has(key);
         const isToday = i === 6;
         return (
           <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px" }}>
@@ -175,7 +437,6 @@ function WeekGrid({ workouts }) {
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: "12px", fontWeight: 600,
               color: active ? "var(--accent-text)" : "var(--text-ter)",
-              transition: "all 0.2s",
             }}>
               {d.getDate()}
             </div>
@@ -198,7 +459,7 @@ function MiniBar({ label, value, max, color }) {
         <span style={{ fontSize: "12px", color, fontWeight: 700, fontFamily: "monospace" }}>{value}</span>
       </div>
       <div style={{ height: "4px", background: "var(--border)", borderRadius: "99px", overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: "99px", transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)" }} />
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: "99px", transition: "width 0.6s" }} />
       </div>
     </div>
   );
@@ -221,14 +482,12 @@ function StatCard({ label, value, sub, accent }) {
 function VolumeChart({ workouts }) {
   const data = useMemo(() => {
     const map = {};
-    workouts.forEach((w) => {
+    workouts.forEach(w => {
       const d = formatDate(w.created_at);
-      const vol = w.weight > 0 ? w.sets * w.reps * w.weight : w.sets * w.reps;
-      map[d] = (map[d] || 0) + vol;
+      const v = w.weight > 0 ? w.sets * w.reps * w.weight : w.sets * w.reps;
+      map[d] = (map[d] || 0) + v;
     });
-    const entries = Object.entries(map)
-      .sort((a, b) => new Date(a[0]) - new Date(b[0]))
-      .slice(-8);
+    const entries = Object.entries(map).sort((a, b) => new Date(a[0]) - new Date(b[0])).slice(-8);
     const max = Math.max(...entries.map(([, v]) => v), 1);
     return { entries, max };
   }, [workouts]);
@@ -242,16 +501,12 @@ function VolumeChart({ workouts }) {
         <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", height: "100%" }}>
           <div style={{ flex: 1, width: "100%", display: "flex", alignItems: "flex-end" }}>
             <div title={`${date}: ${Math.round(vol).toLocaleString()}`} style={{
-              width: "100%", background: "var(--accent)",
-              borderRadius: "4px 4px 2px 2px", minHeight: "4px",
-              height: `${(vol / data.max) * 100}%`,
-              transition: "height 0.5s cubic-bezier(0.34,1.56,0.64,1)",
-              cursor: "pointer", opacity: i === data.entries.length - 1 ? 1 : 0.5,
+              width: "100%", background: "var(--accent)", borderRadius: "4px 4px 2px 2px",
+              minHeight: "4px", height: `${(vol / data.max) * 100}%`,
+              opacity: i === data.entries.length - 1 ? 1 : 0.5,
             }} />
           </div>
-          <span style={{ fontSize: "9px", color: "var(--text-ter)", whiteSpace: "nowrap" }}>
-            {date.split(" ")[1]}
-          </span>
+          <span style={{ fontSize: "9px", color: "var(--text-ter)", whiteSpace: "nowrap" }}>{date.split(" ")[1]}</span>
         </div>
       ))}
     </div>
@@ -261,19 +516,15 @@ function VolumeChart({ workouts }) {
 function PRCard({ exercise, weight, date, color }) {
   return (
     <div style={{
-      display: "flex", alignItems: "center", gap: "12px",
-      padding: "10px 14px", borderRadius: "12px",
-      background: "var(--bg-input)", border: "1px solid var(--border)",
-      marginBottom: "8px",
+      display: "flex", alignItems: "center", gap: "12px", padding: "10px 14px",
+      borderRadius: "12px", background: "var(--bg-input)", border: "1px solid var(--border)", marginBottom: "8px",
     }}>
       <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, flexShrink: 0 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{exercise}</div>
         <div style={{ fontSize: "11px", color: "var(--text-ter)", marginTop: "1px" }}>{date}</div>
       </div>
-      <div style={{ fontSize: "15px", fontWeight: 800, color, fontFamily: "monospace", flexShrink: 0 }}>
-        {fmtWeight(weight)}
-      </div>
+      <div style={{ fontSize: "15px", fontWeight: 800, color, fontFamily: "monospace", flexShrink: 0 }}>{fmtWeight(weight)}</div>
     </div>
   );
 }
@@ -286,8 +537,7 @@ function GroupBadge({ muscleGroup }) {
       width: "42px", height: "42px", borderRadius: "12px", flexShrink: 0,
       background: `${color}22`, border: `1px solid ${color}44`,
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: "10px", fontWeight: 700, color,
-      textTransform: "uppercase", letterSpacing: "0.03em",
+      fontSize: "10px", fontWeight: 700, color, textTransform: "uppercase", letterSpacing: "0.03em",
     }}>
       {group.slice(0, 3)}
     </div>
@@ -296,8 +546,8 @@ function GroupBadge({ muscleGroup }) {
 
 function WorkoutCard({ workout, onEdit, onDelete }) {
   const [confirming, setConfirming] = useState(false);
-  const group = workout.muscle_group || "Other";
-  const color = GROUP_COLORS[group] || "#6b7280";
+  const group  = workout.muscle_group || "Other";
+  const color  = GROUP_COLORS[group] || "#6b7280";
   const volume = workout.weight > 0
     ? workout.sets * workout.reps * workout.weight
     : workout.sets * workout.reps;
@@ -323,8 +573,6 @@ function WorkoutCard({ workout, onEdit, onDelete }) {
           {workout.exercise}
         </div>
         <div style={{ fontSize: "12px", color: "var(--text-sec)", display: "flex", gap: "10px", flexWrap: "wrap" }}>
-          <span>{workout.user}</span>
-          <span style={{ color: "var(--text-ter)" }}>·</span>
           <span>{workout.sets} × {workout.reps}</span>
           <span style={{ color: "var(--text-ter)" }}>·</span>
           <span style={{ color: "#60a5fa", fontWeight: 600 }}>{fmtWeight(workout.weight)}</span>
@@ -332,9 +580,7 @@ function WorkoutCard({ workout, onEdit, onDelete }) {
           <span style={{ color: "var(--accent)", fontWeight: 600 }}>{Math.round(volume).toLocaleString()} vol</span>
         </div>
         {workout.notes && (
-          <div style={{ fontSize: "11px", color: "var(--text-ter)", marginTop: "4px", fontStyle: "italic" }}>
-            {workout.notes}
-          </div>
+          <div style={{ fontSize: "11px", color: "var(--text-ter)", marginTop: "4px", fontStyle: "italic" }}>{workout.notes}</div>
         )}
       </div>
       <div style={{ fontSize: "11px", color: "var(--text-ter)", flexShrink: 0 }}>{formatDate(workout.created_at)}</div>
@@ -342,7 +588,7 @@ function WorkoutCard({ workout, onEdit, onDelete }) {
         <button onClick={() => onEdit(workout)} style={{
           background: "var(--bg-input)", border: "1px solid var(--border-in)",
           color: "var(--text-sec)", borderRadius: "8px", padding: "6px 10px",
-          fontSize: "11px", cursor: "pointer", fontWeight: 600, transition: "all 0.15s",
+          fontSize: "11px", cursor: "pointer", fontWeight: 600,
         }}
           onMouseEnter={e => { e.currentTarget.style.background = "var(--bg-card-hov)"; e.currentTarget.style.color = "var(--text)"; }}
           onMouseLeave={e => { e.currentTarget.style.background = "var(--bg-input)"; e.currentTarget.style.color = "var(--text-sec)"; }}
@@ -351,26 +597,23 @@ function WorkoutCard({ workout, onEdit, onDelete }) {
           background: confirming ? "rgba(239,68,68,0.3)" : "rgba(239,68,68,0.08)",
           border: `1px solid ${confirming ? "rgba(239,68,68,0.6)" : "rgba(239,68,68,0.2)"}`,
           color: "#ef4444", borderRadius: "8px", padding: "6px 10px",
-          fontSize: "11px", cursor: "pointer", fontWeight: 600, transition: "all 0.15s", minWidth: "52px",
+          fontSize: "11px", cursor: "pointer", fontWeight: 600, minWidth: "52px",
         }}>{confirming ? "Sure?" : "Del"}</button>
       </div>
     </div>
   );
 }
 
-// ─── NEW: Progression Chart ────────────────────────────────────────────────────
+// Lightweight SVG progression chart
 function ProgressionChart({ workouts }) {
-  const exercises = useMemo(() => {
-    const set = new Set(workouts.filter(w => w.weight > 0).map(w => w.exercise));
-    return [...set].sort();
-  }, [workouts]);
-
+  const exercises = useMemo(
+    () => [...new Set(workouts.filter(w => w.weight > 0).map(w => w.exercise))].sort(),
+    [workouts]
+  );
   const [selected, setSelected] = useState("");
-  const [mode, setMode] = useState("weight"); // "weight" | "volume" | "1rm"
+  const [mode, setMode] = useState("weight");
 
-  useEffect(() => {
-    if (exercises.length && !selected) setSelected(exercises[0]);
-  }, [exercises]);
+  useEffect(() => { if (exercises.length && !selected) setSelected(exercises[0]); }, [exercises]);
 
   const chartData = useMemo(() => {
     if (!selected) return [];
@@ -382,13 +625,12 @@ function ProgressionChart({ workouts }) {
         weight: w.weight,
         volume: w.sets * w.reps * w.weight,
         orm: epley1RM(w.weight, w.reps),
-        sets: w.sets,
-        reps: w.reps,
+        sets: w.sets, reps: w.reps,
       }));
   }, [workouts, selected]);
 
-  const getValue = (d) => mode === "weight" ? d.weight : mode === "volume" ? d.volume : d.orm;
-  const getLabel = () => mode === "weight" ? "Max Weight (lbs)" : mode === "volume" ? "Volume (lbs)" : "Est. 1RM (lbs)";
+  const getValue = d => mode === "weight" ? d.weight : mode === "volume" ? d.volume : d.orm;
+  const getLabel = () => mode === "weight" ? "Weight (lbs)" : mode === "volume" ? "Volume (lbs)" : "Est. 1RM (lbs)";
 
   if (!exercises.length) return (
     <div style={{ textAlign: "center", color: "var(--text-ter)", fontSize: "14px", padding: "48px 0" }}>
@@ -397,10 +639,8 @@ function ProgressionChart({ workouts }) {
   );
 
   const values = chartData.map(getValue);
-  const minVal = Math.min(...values, 0);
-  const maxVal = Math.max(...values, 1);
-  const range = maxVal - minVal || 1;
-
+  const minVal = Math.min(...values, 0), maxVal = Math.max(...values, 1);
+  const range  = maxVal - minVal || 1;
   const W = 600, H = 180, PL = 52, PR = 16, PT = 16, PB = 36;
   const iW = W - PL - PR, iH = H - PT - PB;
 
@@ -412,82 +652,64 @@ function ProgressionChart({ workouts }) {
 
   const pathD = points.length < 2
     ? ""
-    : points.map((p, i) => i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`).join(" ");
+    : points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
 
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map(t => ({
     val: Math.round(minVal + t * range),
     y: PT + iH - t * iH,
   }));
 
-  const btnStyle = (active) => ({
+  const btnS = active => ({
     padding: "4px 12px", borderRadius: "6px", border: "1px solid var(--border-in)",
-    fontSize: "12px", cursor: "pointer", fontWeight: 600,
+    fontSize: "12px", cursor: "pointer", fontWeight: 600, transition: "all 0.15s",
     background: active ? "var(--accent)" : "var(--bg-input)",
     color: active ? "var(--accent-text)" : "var(--text-sec)",
-    transition: "all 0.15s",
   });
 
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px", flexWrap: "wrap" }}>
-        <select
-          value={selected}
-          onChange={e => setSelected(e.target.value)}
-          style={{
-            background: "var(--bg-input)", border: "1px solid var(--border-in)",
-            color: "var(--text)", borderRadius: "8px", padding: "6px 10px",
-            fontSize: "13px", cursor: "pointer", flex: "1", minWidth: "140px",
-          }}
-        >
-          {exercises.map(ex => <option key={ex} value={ex} style={{ background: "var(--select-bg)" }}>{ex}</option>)}
+        <select value={selected} onChange={e => setSelected(e.target.value)} style={{
+          background: "var(--bg-input)", border: "1px solid var(--border-in)",
+          color: "var(--text)", borderRadius: "8px", padding: "6px 10px", fontSize: "13px", flex: 1, minWidth: "140px",
+        }}>
+          {exercises.map(ex => <option key={ex} value={ex}>{ex}</option>)}
         </select>
         <div style={{ display: "flex", gap: "4px" }}>
-          {[["weight","Weight"],["volume","Volume"],["1rm","Est. 1RM"]].map(([key, lbl]) => (
-            <button key={key} style={btnStyle(mode === key)} onClick={() => setMode(key)}>{lbl}</button>
+          {[["weight","Weight"],["volume","Volume"],["1rm","Est. 1RM"]].map(([k, l]) => (
+            <button key={k} style={btnS(mode === k)} onClick={() => setMode(k)}>{l}</button>
           ))}
         </div>
       </div>
-
       {chartData.length === 0 ? (
-        <div style={{ textAlign: "center", color: "var(--text-ter)", fontSize: "13px", padding: "32px 0" }}>
-          No weighted data for this exercise
-        </div>
+        <div style={{ textAlign: "center", color: "var(--text-ter)", fontSize: "13px", padding: "32px 0" }}>No weighted data for this exercise</div>
       ) : (
         <>
           <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ overflow: "visible", display: "block" }}>
-            {/* Grid lines */}
             {yTicks.map((t, i) => (
               <g key={i}>
                 <line x1={PL} y1={t.y} x2={W - PR} y2={t.y} stroke="var(--border)" strokeWidth="1" />
                 <text x={PL - 6} y={t.y + 4} textAnchor="end" fontSize="10" fill="var(--text-ter)" fontFamily="monospace">{t.val}</text>
               </g>
             ))}
-            {/* X axis labels */}
             {points.map((p, i) => (
-              (i === 0 || i === points.length - 1 || (points.length <= 6)) && (
+              (i === 0 || i === points.length - 1 || points.length <= 6) && (
                 <text key={i} x={p.x} y={H - 4} textAnchor="middle" fontSize="10" fill="var(--text-ter)">{p.date}</text>
               )
             ))}
-            {/* Line */}
             {pathD && <path d={pathD} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
-            {/* Fill area */}
             {pathD && points.length > 1 && (
-              <path
-                d={`${pathD} L ${points[points.length-1].x} ${PT + iH} L ${points[0].x} ${PT + iH} Z`}
-                fill="var(--accent)" opacity="0.08"
-              />
+              <path d={`${pathD} L ${points[points.length-1].x} ${PT+iH} L ${points[0].x} ${PT+iH} Z`} fill="var(--accent)" opacity="0.08" />
             )}
-            {/* Dots */}
             {points.map((p, i) => (
               <g key={i}>
                 <circle cx={p.x} cy={p.y} r="4" fill="var(--accent)" />
-                <title>{p.date}: {Math.round(getValue(p))} lbs | {p.sets}×{p.reps}</title>
+                <title>{p.date}: {Math.round(getValue(p))} | {p.sets}×{p.reps}</title>
               </g>
             ))}
           </svg>
           <div style={{ fontSize: "11px", color: "var(--text-ter)", textAlign: "center", marginTop: "4px" }}>
-            {getLabel()} · {chartData.length} session{chartData.length !== 1 ? "s" : ""}
-            {mode === "1rm" && " · Epley formula"}
+            {getLabel()} · {chartData.length} session{chartData.length !== 1 ? "s" : ""}{mode === "1rm" ? " · Epley formula" : ""}
           </div>
         </>
       )}
@@ -495,187 +717,113 @@ function ProgressionChart({ workouts }) {
   );
 }
 
-// ─── NEW: Training Insights ────────────────────────────────────────────────────
-function InsightCard({ icon, title, value, detail, accent }) {
-  return (
-    <div style={{
-      background: "var(--bg-card)", border: "1px solid var(--border)",
-      borderRadius: "14px", padding: "16px 18px",
-      borderLeft: `3px solid ${accent}`,
-    }}>
-      <div style={{ fontSize: "11px", color: "var(--text-ter)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "6px" }}>{icon} {title}</div>
-      <div style={{ fontSize: "20px", fontWeight: 800, color: "var(--text)", letterSpacing: "-0.5px", lineHeight: 1.1 }}>{value}</div>
-      {detail && <div style={{ fontSize: "12px", color: "var(--text-sec)", marginTop: "5px" }}>{detail}</div>}
-    </div>
-  );
-}
+// =============================================================================
+// MAIN APP
+// =============================================================================
 
-function TrainingInsights({ workouts, stats }) {
-  const insights = useMemo(() => {
-    if (!workouts.length) return [];
-
-    const result = [];
-
-    // Favourite muscle group
-    const topGroup = Object.entries(stats.groupCounts).sort((a, b) => b[1] - a[1])[0];
-    if (topGroup) {
-      result.push({
-        icon: "💪", title: "Favourite group", accent: GROUP_COLORS[topGroup[0]] || "#6b7280",
-        value: topGroup[0],
-        detail: `${topGroup[1]} session${topGroup[1] !== 1 ? "s" : ""} logged`,
-      });
-    }
-
-    // Muscle balance warning
-    const total = Object.values(stats.groupCounts).reduce((a, b) => a + b, 0);
-    if (topGroup && total > 0) {
-      const pct = Math.round((topGroup[1] / total) * 100);
-      if (pct > 40) {
-        result.push({
-          icon: "⚖️", title: "Balance check", accent: "#f59e0b",
-          value: `${pct}% ${topGroup[0]}`,
-          detail: "Consider training other muscle groups more",
-        });
-      }
-    }
-
-    // Most improved exercise (biggest weight jump between first and last log)
-    const exerciseHistory = {};
-    workouts.filter(w => w.weight > 0).forEach(w => {
-      const key = w.exercise.toLowerCase().trim();
-      if (!exerciseHistory[key]) exerciseHistory[key] = { name: w.exercise, logs: [] };
-      exerciseHistory[key].logs.push({ weight: w.weight, date: parseUTC(w.created_at) });
-    });
-    let bestGain = null;
-    Object.values(exerciseHistory).forEach(({ name, logs }) => {
-      if (logs.length < 2) return;
-      logs.sort((a, b) => a.date - b.date);
-      const gain = logs[logs.length - 1].weight - logs[0].weight;
-      if (gain > 0 && (!bestGain || gain > bestGain.gain)) bestGain = { name, gain };
-    });
-    if (bestGain) {
-      result.push({
-        icon: "📈", title: "Most improved", accent: "#14b8a6",
-        value: bestGain.name,
-        detail: `+${bestGain.gain} lbs since first log`,
-      });
-    }
-
-    // Best estimated 1RM
-    const best1RM = workouts.filter(w => w.weight > 0).reduce((best, w) => {
-      const orm = epley1RM(w.weight, w.reps);
-      return orm > (best?.orm || 0) ? { exercise: w.exercise, orm, weight: w.weight, reps: w.reps } : best;
-    }, null);
-    if (best1RM) {
-      result.push({
-        icon: "🏆", title: "Best est. 1RM", accent: "#f97316",
-        value: `${best1RM.orm} lbs`,
-        detail: `${best1RM.exercise} (${best1RM.weight}×${best1RM.reps})`,
-      });
-    }
-
-    // Consistency rate (last 30 days)
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-    const recentDays = new Set(
-      workouts.filter(w => parseUTC(w.created_at) >= thirtyDaysAgo).map(w => utcDateKey(w.created_at))
-    ).size;
-    result.push({
-      icon: "📅", title: "Last 30 days", accent: "#8b5cf6",
-      value: `${recentDays} active day${recentDays !== 1 ? "s" : ""}`,
-      detail: `${Math.round((recentDays / 30) * 100)}% consistency`,
-    });
-
-    // Total reps ever
-    const totalReps = workouts.reduce((s, w) => s + w.sets * w.reps, 0);
-    result.push({
-      icon: "🔁", title: "Total reps ever", accent: "#ec4899",
-      value: totalReps.toLocaleString(),
-      detail: `Across ${workouts.length} logged session${workouts.length !== 1 ? "s" : ""}`,
-    });
-
-    return result;
-  }, [workouts, stats]);
-
-  if (!insights.length) return (
-    <div style={{ textAlign: "center", color: "var(--text-ter)", fontSize: "14px", padding: "48px 0" }}>
-      Log a few workouts to unlock insights
-    </div>
-  );
-
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "12px" }}>
-      {insights.map((ins, i) => <InsightCard key={i} {...ins} />)}
-    </div>
-  );
-}
-
-// ─── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  // Theme — respects system preference, persists to localStorage
+  // Auth — loaded from localStorage on startup
+  const [token, setToken]             = useState(() => loadSession().token);
+  const [currentUser, setCurrentUser] = useState(() => loadSession().user);
+
+  // Theme
   const [dark, setDark] = useState(() => {
     const saved = localStorage.getItem("fw-theme");
-    if (saved) return saved === "dark";
-    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    return saved ? saved === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   const toggleTheme = () => setDark(d => {
     localStorage.setItem("fw-theme", !d ? "dark" : "light");
     return !d;
   });
 
-  const [workouts, setWorkouts] = useState([]);
-  const [formData, setFormData] = useState(EMPTY_FORM);
+  // App state
+  const [workouts, setWorkouts]   = useState([]);
+  const [formData, setFormData]   = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading]     = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError]         = useState(null);
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [filterUser, setFilterUser] = useState("All");
   const [filterGroup, setFilterGroup] = useState("All");
   const [previewGroup, setPreviewGroup] = useState(null);
 
-  const S = makeStyles(dark);
-  const themeVars = getThemeVars(dark);
+  const S          = makeStyles();
+  const themeVars  = getThemeVars(dark);
+  const groupColor = previewGroup ? (GROUP_COLORS[previewGroup] || "#6b7280") : null;
 
+  // Live muscle-group preview while the user types an exercise name
   useEffect(() => {
     const name = formData.exercise.trim();
     setPreviewGroup(name ? classifyExercise(name) : null);
   }, [formData.exercise]);
 
+  // ── Auth handlers ────────────────────────────────────────────────────────────
+
+  const handleAuth = (tok, user) => {
+    setToken(tok);
+    setCurrentUser(user);
+  };
+
+  const handleLogout = () => {
+    clearSession();
+    setToken(null);
+    setCurrentUser(null);
+    setWorkouts([]);
+    setActiveTab("dashboard");
+  };
+
+  // ── Data fetching ────────────────────────────────────────────────────────────
+
   const fetchWorkouts = useCallback(async () => {
+    if (!token) return;
     try {
-      setLoading(true); setError(null);
-      const res = await fetch(`${API_URL}/workouts`);
-      if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+      setLoading(true);
+      setError(null);
+      const res = await apiFetch("/workouts", token);
+      if (res.status === 401) {
+        // Token expired or invalid — log out and explain why
+        clearSession();
+        setToken(null); setCurrentUser(null); setWorkouts([]);
+        // The auth screen will show; no extra error needed here
+        return;
+      }
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
       setWorkouts(await res.json());
     } catch {
-      setError("Can't reach server — make sure the API is running.");
+      setError("Can't reach server — make sure uvicorn is running on port 8000.");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => { fetchWorkouts(); }, [fetchWorkouts]);
+
+  // ── Form handlers ────────────────────────────────────────────────────────────
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (submitting) return;
     const payload = {
-      user: formData.user,
       exercise: formData.exercise,
-      sets: Number(formData.sets),
-      reps: Number(formData.reps),
-      weight: Number(formData.weight) || 0,
-      notes: formData.notes || "",
+      sets:     Number(formData.sets),
+      reps:     Number(formData.reps),
+      weight:   Number(formData.weight) || 0,
+      notes:    formData.notes || "",
     };
     try {
       setSubmitting(true);
-      const res = await fetch(
-        editingId ? `${API_URL}/workouts/${editingId}` : `${API_URL}/workouts`,
-        { method: editingId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }
+      const res = await apiFetch(
+        editingId ? `/workouts/${editingId}` : "/workouts",
+        token,
+        { method: editingId ? "PUT" : "POST", body: JSON.stringify(payload) }
       );
+      if (res.status === 401) {
+        clearSession(); setToken(null); setCurrentUser(null); setWorkouts([]);
+        return;
+      }
       if (!res.ok) throw new Error();
-      setFormData(EMPTY_FORM); setEditingId(null); setActiveTab("dashboard");
+      setEditingId(null);
+      setActiveTab("dashboard");
       fetchWorkouts();
     } catch {
       setError("Failed to save workout. Please try again.");
@@ -684,284 +832,350 @@ export default function App() {
     }
   };
 
-  const handleEdit = (w) => {
+  const handleEdit = w => {
     setFormData({
-      user: w.user, exercise: w.exercise,
-      sets: String(w.sets), reps: String(w.reps),
-      weight: w.weight > 0 ? String(w.weight) : "",
-      notes: w.notes || "",
+      exercise: w.exercise,
+      sets:     String(w.sets),
+      reps:     String(w.reps),
+      weight:   w.weight > 0 ? String(w.weight) : "",
+      notes:    w.notes || "",
     });
     setEditingId(w.id);
     setActiveTab("log");
   };
 
-  const handleDelete = async (id) => {
+  const handleDelete = async id => {
     try {
-      const res = await fetch(`${API_URL}/workouts/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/workouts/${id}`, token, { method: "DELETE" });
+      if (res.status === 401) {
+        clearSession(); setToken(null); setCurrentUser(null); setWorkouts([]);
+        return;
+      }
       if (!res.ok) throw new Error();
       fetchWorkouts();
     } catch {
-      setError("Failed to delete workout. Please try again.");
+      setError("Failed to delete workout.");
     }
   };
 
-  const users = useMemo(() => ["All", ...new Set(workouts.map(w => w.user))], [workouts]);
-  const groups = ["All", ...Object.keys(GROUP_COLORS)];
-  const filtered = useMemo(() =>
-    workouts.filter(w =>
-      (filterUser === "All" || w.user === filterUser) &&
-      (filterGroup === "All" || (w.muscle_group || "Other") === filterGroup)
-    ), [workouts, filterUser, filterGroup]);
+  // ── Derived data ─────────────────────────────────────────────────────────────
+
+  const groups   = ["All", ...Object.keys(GROUP_COLORS)];
+  const filtered = useMemo(
+    () => workouts.filter(w => filterGroup === "All" || (w.muscle_group || "Other") === filterGroup),
+    [workouts, filterGroup]
+  );
 
   const stats = useMemo(() => {
     const totalVol = workouts.reduce((s, w) =>
       s + (w.weight > 0 ? w.sets * w.reps * w.weight : w.sets * w.reps), 0);
+
     const uniqueDays = new Set(workouts.map(w => utcDateKey(w.created_at))).size;
+
     const groupCounts = {};
     workouts.forEach(w => {
       const g = w.muscle_group || "Other";
       groupCounts[g] = (groupCounts[g] || 0) + 1;
     });
+
     const streak = (() => {
-      const cur = new Date();
+      const cur  = new Date();
       const days = [...new Set(workouts.map(w => utcDateKey(w.created_at)))].sort().reverse();
       let s = 0;
-      for (const dayKey of days) {
-        const expected = `${cur.getUTCFullYear()}-${cur.getUTCMonth()}-${cur.getUTCDate()}`;
-        if (dayKey === expected) { s++; cur.setUTCDate(cur.getUTCDate() - 1); } else break;
+      for (const key of days) {
+        const exp = `${cur.getUTCFullYear()}-${cur.getUTCMonth()}-${cur.getUTCDate()}`;
+        if (key === exp) { s++; cur.setUTCDate(cur.getUTCDate() - 1); } else break;
       }
       return s;
     })();
+
     const prMap = {};
     workouts.forEach(w => {
       if (w.weight <= 0) return;
-      const key = w.exercise.toLowerCase().trim();
-      if (!prMap[key] || w.weight > prMap[key].weight)
-        prMap[key] = { exercise: w.exercise, weight: w.weight, date: formatDate(w.created_at), group: w.muscle_group || "Other" };
+      const k = w.exercise.toLowerCase().trim();
+      if (!prMap[k] || w.weight > prMap[k].weight)
+        prMap[k] = { exercise: w.exercise, weight: w.weight, date: formatDate(w.created_at), group: w.muscle_group || "Other" };
     });
     const topPRs = Object.values(prMap).sort((a, b) => b.weight - a.weight).slice(0, 5);
-    const sessionVolumes = {};
+
+    const sessionVols = {};
     workouts.forEach(w => {
-      const key = utcDateKey(w.created_at);
-      const vol = w.weight > 0 ? w.sets * w.reps * w.weight : w.sets * w.reps;
-      sessionVolumes[key] = (sessionVolumes[key] || 0) + vol;
+      const k = utcDateKey(w.created_at);
+      sessionVols[k] = (sessionVols[k] || 0) + (w.weight > 0 ? w.sets * w.reps * w.weight : w.sets * w.reps);
     });
-    const bestSession = Math.max(0, ...Object.values(sessionVolumes));
+    const bestSession = Math.max(0, ...Object.values(sessionVols));
+
     return { totalVol, uniqueDays, streak, groupCounts, topPRs, bestSession };
   }, [workouts]);
 
-  const groupColor = previewGroup ? (GROUP_COLORS[previewGroup] || "#6b7280") : null;
 
-  const getTabStyle = (active) => ({
+  const recommendation = useMemo(() => {
+    const allGroups = ["Chest", "Back", "Legs", "Shoulders", "Arms", "Core", "Cardio"];
+
+    const exerciseMap = {
+      Chest: ["Bench Press", "Incline Press", "Pec Deck Fly"],
+      Back: ["Lat Pulldown", "Seated Row", "Cable Row"],
+      Legs: ["Squat", "Leg Press", "Romanian Deadlift"],
+      Shoulders: ["Shoulder Press", "Lateral Raise", "Rear Delt Fly"],
+      Arms: ["Bicep Curl", "Tricep Pushdown", "Hammer Curl"],
+      Core: ["Plank", "Cable Crunch", "Leg Raise"],
+      Cardio: ["Treadmill", "Bike", "Jump Rope"],
+    };
+
+    if (!workouts.length) {
+      return {
+        focus: "Start Training",
+        reason: "No workout data has been logged yet. FitWise recommends starting with a balanced full body workout.",
+        exercises: ["Bench Press", "Squat", "Lat Pulldown"],
+        confidence: "Low",
+      };
+    }
+
+    const counts = {};
+    allGroups.forEach(group => { counts[group] = 0; });
+
+    workouts.forEach(w => {
+      const group = w.muscle_group || "Other";
+      if (counts[group] !== undefined) counts[group] += 1;
+    });
+
+    const leastTrained = [...allGroups].sort((a, b) => counts[a] - counts[b])[0];
+    const mostTrained = [...allGroups].sort((a, b) => counts[b] - counts[a])[0];
+
+    return {
+      focus: leastTrained,
+      reason: `${leastTrained} has been trained less than your other muscle groups. Your most trained area is ${mostTrained}, so FitWise recommends balancing your next session toward ${leastTrained}.`,
+      exercises: exerciseMap[leastTrained] || ["Full Body Workout"],
+      confidence: workouts.length >= 5 ? "Medium" : "Low",
+    };
+  }, [workouts]);
+
+  const getTabStyle = active => ({
     padding: "8px 18px", borderRadius: "8px", border: "none", cursor: "pointer",
     fontSize: "13px", fontWeight: 600, transition: "all 0.15s",
     background: active ? "var(--tab-active-bg)" : "transparent",
-    color: active ? "var(--tab-active-clr)" : "var(--tab-clr)",
+    color:      active ? "var(--tab-active-clr)" : "var(--tab-clr)",
     letterSpacing: "0.02em",
   });
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Show auth screen if not logged in ────────────────────────────────────────
+  if (!token || !currentUser) {
+    return <AuthScreen onAuth={handleAuth} dark={dark} />;
+  }
+
+  const TABS = ["dashboard", "insights", "progress", "log", "history"];
+
+  // ── Main app ─────────────────────────────────────────────────────────────────
   return (
-    <div style={{ ...themeVars, minHeight: "100vh", background: "var(--bg-page)", fontFamily: "'DM Sans', 'Segoe UI', sans-serif", color: "var(--text)", transition: "background 0.25s, color 0.25s" }}>
-      <style>{`
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-        * { box-sizing: border-box; }
-        select option { background: var(--select-bg, #fff); }
-      `}</style>
+    <div style={{ ...themeVars, minHeight: "100vh", background: "var(--bg-page)", fontFamily: "'DM Sans','Segoe UI',sans-serif", color: "var(--text)", transition: "background 0.25s, color 0.25s" }}>
+      <style>{`* { box-sizing: border-box; }`}</style>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ borderBottom: "1px solid var(--border)", padding: "0 32px", position: "sticky", top: 0, zIndex: 100, backdropFilter: "blur(12px)", background: "var(--header-bg)" }}>
         <div style={{ maxWidth: "1100px", margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: "60px" }}>
+
+          {/* Logo */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <div style={{ width: "28px", height: "28px", borderRadius: "8px", background: "linear-gradient(135deg, var(--accent), var(--accent-dk))", display: "flex", alignItems: "center", justifyContent: "center" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-text)" strokeWidth="2.5" strokeLinecap="round">
                 <path d="M6.5 6.5h11M6.5 17.5h11M3 12h18M8 4v16M16 4v16"/>
               </svg>
             </div>
-            <span style={{ fontWeight: 800, fontSize: "18px", letterSpacing: "-0.5px", color: "var(--text)" }}>FitWise</span>
+            <span style={{ fontWeight: 800, fontSize: "18px", letterSpacing: "-0.5px" }}>FitWise</span>
           </div>
 
+          {/* Nav tabs */}
           <nav style={{ display: "flex", gap: "4px" }}>
-            {["dashboard","insights","progress","log","history"].map(tab => (
+            {TABS.map(tab => (
               <button key={tab} style={getTabStyle(activeTab === tab)} onClick={() => setActiveTab(tab)}>
                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
               </button>
             ))}
           </nav>
 
+          {/* Right side: user badge, theme toggle, log button, sign out */}
           <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            {/* Dark/Light toggle */}
-            <button
-              onClick={toggleTheme}
-              title={dark ? "Switch to light mode" : "Switch to dark mode"}
-              style={{
-                width: "36px", height: "36px", borderRadius: "10px",
-                border: "1px solid var(--border-in)", background: "var(--bg-input)",
-                cursor: "pointer", fontSize: "16px", display: "flex", alignItems: "center",
-                justifyContent: "center", transition: "all 0.2s", color: "var(--text)",
-              }}
-            >
-              {dark ? "☀️" : "🌙"}
-            </button>
-            <button
-              onClick={() => { setActiveTab("log"); setEditingId(null); setFormData(EMPTY_FORM); }}
-              style={{
-                background: "linear-gradient(135deg, var(--accent), var(--accent-dk))", color: "var(--accent-text)",
-                border: "none", borderRadius: "10px", padding: "8px 18px",
-                fontSize: "13px", fontWeight: 700, cursor: "pointer", letterSpacing: "0.02em",
-              }}
-            >+ Log Workout</button>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "5px 12px", borderRadius: "10px", background: "var(--bg-input)", border: "1px solid var(--border-in)" }}>
+              <div style={{ width: "22px", height: "22px", borderRadius: "50%", background: "linear-gradient(135deg, var(--accent), var(--accent-dk))", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 800, color: "var(--accent-text)" }}>
+                {(currentUser.display_name || currentUser.username).charAt(0).toUpperCase()}
+              </div>
+              <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-sec)" }}>
+                {currentUser.display_name || currentUser.username}
+              </span>
+            </div>
+            <button onClick={toggleTheme} title={dark ? "Light mode" : "Dark mode"} style={{
+              width: "36px", height: "36px", borderRadius: "10px", border: "1px solid var(--border-in)",
+              background: "var(--bg-input)", cursor: "pointer", fontSize: "16px",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>{dark ? "☀️" : "🌙"}</button>
+            <button onClick={() => { setActiveTab("log"); setEditingId(null); setFormData(EMPTY_FORM); }} style={{
+              background: "linear-gradient(135deg, var(--accent), var(--accent-dk))", color: "var(--accent-text)",
+              border: "none", borderRadius: "10px", padding: "8px 18px", fontSize: "13px", fontWeight: 700, cursor: "pointer",
+            }}>+ Log</button>
+            <button onClick={handleLogout} style={{
+              background: "transparent", border: "1px solid var(--border-in)", color: "var(--text-ter)",
+              borderRadius: "10px", padding: "8px 12px", fontSize: "13px", fontWeight: 600, cursor: "pointer",
+            }}>Sign out</button>
           </div>
         </div>
       </div>
 
       <div style={{ maxWidth: "1100px", margin: "0 auto", padding: "32px" }}>
+
+        {/* Global error banner */}
         {error && (
           <div style={{ background: "var(--error-bg)", border: "1px solid var(--error-bd)", borderRadius: "12px", padding: "12px 16px", marginBottom: "24px", color: "#ef4444", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             {error}
-            <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: "18px", lineHeight: 1 }}>×</button>
+            <button onClick={() => setError(null)} style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: "18px" }}>×</button>
           </div>
         )}
 
-        {/* ── DASHBOARD ─────────────────────────────────────────────────────── */}
+        {/* ── DASHBOARD ──────────────────────────────────────────────────────── */}
         {activeTab === "dashboard" && (
           <div>
             <div style={{ marginBottom: "28px" }}>
-              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0, color: "var(--text)" }}>Your Dashboard</h2>
+              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0 }}>
+                {currentUser.display_name ? `Hey, ${currentUser.display_name.split(" ")[0]} 👋` : "Your Dashboard"}
+              </h2>
               <p style={{ color: "var(--text-sec)", fontSize: "14px", marginTop: "4px" }}>Track your progress and stay consistent</p>
             </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "16px", marginBottom: "16px" }}>
               <StatCard label="Total Workouts" value={workouts.length} sub="All time" accent="#a3e635" />
               <StatCard label="Total Volume" value={stats.totalVol >= 1000 ? `${(stats.totalVol/1000).toFixed(1)}k` : Math.round(stats.totalVol).toLocaleString()} sub="Sets × Reps × Weight" accent="#3b82f6" />
-              <StatCard label="Active Days" value={stats.uniqueDays} sub="Days trained" accent="#f97316" />
-              <StatCard label="Streak" value={`${stats.streak}d`} sub={stats.streak > 0 ? "Keep it up!" : "Start today"} accent="#ec4899" />
+              <StatCard label="Active Days"   value={stats.uniqueDays} sub="Days trained" accent="#f97316" />
+              <StatCard label="Streak"        value={`${stats.streak}d`} sub={stats.streak > 0 ? "Keep it up!" : "Start today"} accent="#ec4899" />
             </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px", marginBottom: "16px" }}>
-              <StatCard label="Best Session Vol." value={stats.bestSession >= 1000 ? `${(stats.bestSession/1000).toFixed(1)}k` : Math.round(stats.bestSession).toLocaleString()} sub="Single day record" accent="#a78bfa" />
-              <StatCard label="Exercises Tracked" value={new Set(workouts.map(w => w.exercise.toLowerCase())).size} sub="Unique exercises" accent="#34d399" />
-              <StatCard label="PRs Logged" value={stats.topPRs.length} sub="Exercises with weight" accent="#f59e0b" />
+              <StatCard label="Best Session"  value={stats.bestSession >= 1000 ? `${(stats.bestSession/1000).toFixed(1)}k` : Math.round(stats.bestSession).toLocaleString()} sub="Single day record" accent="#a78bfa" />
+              <StatCard label="Exercises"     value={new Set(workouts.map(w => w.exercise.toLowerCase())).size} sub="Unique exercises" accent="#34d399" />
+              <StatCard label="PRs"           value={stats.topPRs.length} sub="Exercises with weight" accent="#f59e0b" />
             </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "16px" }}>
               <div style={S.card}>
                 <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>This Week</div>
                 <WeekGrid workouts={workouts} />
               </div>
               <div style={S.card}>
-                <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "8px" }}>Volume (last 8 sessions)</div>
+                <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "8px" }}>Volume — last 8 sessions</div>
                 <VolumeChart workouts={workouts} />
               </div>
             </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px" }}>
               <div style={S.card}>
                 <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Muscle Groups</div>
-                {!Object.keys(stats.groupCounts).length ? (
-                  <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No data yet</div>
-                ) : (
-                  Object.entries(stats.groupCounts).sort((a, b) => b[1] - a[1]).map(([group, count]) => (
-                    <MiniBar key={group} label={group} value={count} max={Math.max(...Object.values(stats.groupCounts))} color={GROUP_COLORS[group] || "#6b7280"} />
+                {!Object.keys(stats.groupCounts).length
+                  ? <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No data yet</div>
+                  : Object.entries(stats.groupCounts).sort((a, b) => b[1] - a[1]).map(([g, c]) => (
+                    <MiniBar key={g} label={g} value={c} max={Math.max(...Object.values(stats.groupCounts))} color={GROUP_COLORS[g] || "#6b7280"} />
                   ))
-                )}
+                }
               </div>
               <div style={S.card}>
                 <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Personal Records 🏆</div>
-                {!stats.topPRs.length ? (
-                  <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>Log workouts with weight to see PRs</div>
-                ) : (
-                  stats.topPRs.map((pr, i) => (
-                    <PRCard key={i} exercise={pr.exercise} weight={pr.weight} date={pr.date} color={GROUP_COLORS[pr.group] || "#6b7280"} />
-                  ))
-                )}
+                {!stats.topPRs.length
+                  ? <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>Log workouts with weight to see PRs</div>
+                  : stats.topPRs.map((pr, i) => <PRCard key={i} exercise={pr.exercise} weight={pr.weight} date={pr.date} color={GROUP_COLORS[pr.group] || "#6b7280"} />)
+                }
               </div>
               <div style={S.card}>
                 <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Recent Activity</div>
-                {!workouts.length ? (
-                  <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No workouts logged yet</div>
-                ) : (
-                  workouts.slice(0, 5).map((w) => {
-                    const group = w.muscle_group || "Other";
-                    const color = GROUP_COLORS[group] || "#6b7280";
+                {!workouts.length
+                  ? <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No workouts logged yet</div>
+                  : workouts.slice(0, 5).map(w => {
+                    const g = w.muscle_group || "Other";
+                    const c = GROUP_COLORS[g] || "#6b7280";
                     return (
                       <div key={w.id} style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "10px" }}>
-                        <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: color, flexShrink: 0 }} />
+                        <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: c, flexShrink: 0 }} />
                         <span style={{ flex: 1, fontSize: "13px", color: "var(--text-sec)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{w.exercise}</span>
-                        <span style={{ fontSize: "11px", color, fontWeight: 600, flexShrink: 0 }}>{group}</span>
+                        <span style={{ fontSize: "11px", color: c, fontWeight: 600, flexShrink: 0 }}>{g}</span>
                         <span style={{ fontSize: "11px", color: "var(--text-ter)", flexShrink: 0 }}>{formatDate(w.created_at)}</span>
                       </div>
                     );
                   })
-                )}
+                }
               </div>
             </div>
           </div>
         )}
 
-        {/* ── INSIGHTS (NEW) ────────────────────────────────────────────────── */}
+        {/* ── INSIGHTS ──────────────────────────────────────────────────────── */}
         {activeTab === "insights" && (
           <div>
             <div style={{ marginBottom: "28px" }}>
-              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0, color: "var(--text)" }}>Training Insights</h2>
-              <p style={{ color: "var(--text-sec)", fontSize: "14px", marginTop: "4px" }}>Smart analysis of your training patterns</p>
+              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0 }}>Training Insights</h2>
+              <p style={{ color: "var(--text-sec)", fontSize: "14px", marginTop: "4px" }}>A breakdown of your training patterns</p>
             </div>
-            <TrainingInsights workouts={workouts} stats={stats} />
-
-            {workouts.length > 0 && (
-              <div style={{ marginTop: "28px" }}>
-                <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Volume by Muscle Group</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                  <div style={S.card}>
-                    <div style={{ fontSize: "13px", color: "var(--text-sec)", marginBottom: "14px" }}>Sessions per group</div>
-                    {Object.entries(stats.groupCounts).sort((a, b) => b[1] - a[1]).map(([group, count]) => (
-                      <MiniBar key={group} label={group} value={count} max={Math.max(...Object.values(stats.groupCounts))} color={GROUP_COLORS[group] || "#6b7280"} />
+            {!workouts.length ? (
+              <div style={{ textAlign: "center", color: "var(--text-ter)", padding: "64px" }}>Log some workouts to see insights</div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "16px" }}>
+                <div style={S.card}>
+                  <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>AI Style Recommendation</div>
+                  <h3 style={{ margin: "0 0 8px", fontSize: "22px", color: "var(--accent)" }}>Train {recommendation.focus} Next</h3>
+                  <p style={{ color: "var(--text-sec)", fontSize: "14px", lineHeight: 1.6, marginTop: 0 }}>{recommendation.reason}</p>
+                  <div style={{ margin: "14px 0 10px" }}>
+                    {recommendation.exercises.map((exercise, index) => (
+                      <div key={index} style={{ padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "10px", marginBottom: "8px", fontSize: "14px", color: "var(--text)" }}>
+                        {exercise}
+                      </div>
                     ))}
                   </div>
-                  <div style={S.card}>
-                    <div style={{ fontSize: "13px", color: "var(--text-sec)", marginBottom: "14px" }}>Top personal records</div>
-                    {stats.topPRs.length ? stats.topPRs.map((pr, i) => (
-                      <PRCard key={i} exercise={pr.exercise} weight={pr.weight} date={pr.date} color={GROUP_COLORS[pr.group] || "#6b7280"} />
-                    )) : <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No weighted exercises yet</div>}
-                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--text-ter)" }}>Confidence: {recommendation.confidence}</div>
+                </div>
+                <div style={S.card}>
+                  <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Sessions per muscle group</div>
+                  {Object.entries(stats.groupCounts).sort((a, b) => b[1] - a[1]).map(([g, c]) => (
+                    <MiniBar key={g} label={g} value={c} max={Math.max(...Object.values(stats.groupCounts))} color={GROUP_COLORS[g] || "#6b7280"} />
+                  ))}
+                </div>
+                <div style={S.card}>
+                  <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>Personal records</div>
+                  {stats.topPRs.length
+                    ? stats.topPRs.map((pr, i) => <PRCard key={i} exercise={pr.exercise} weight={pr.weight} date={pr.date} color={GROUP_COLORS[pr.group] || "#6b7280"} />)
+                    : <div style={{ color: "var(--text-ter)", fontSize: "13px" }}>No weighted exercises yet</div>
+                  }
                 </div>
               </div>
             )}
           </div>
         )}
 
-        {/* ── PROGRESSION (NEW) ─────────────────────────────────────────────── */}
+        {/* ── PROGRESS ──────────────────────────────────────────────────────── */}
         {activeTab === "progress" && (
           <div>
             <div style={{ marginBottom: "28px" }}>
-              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0, color: "var(--text)" }}>Progression Charts</h2>
+              <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0 }}>Progression Charts</h2>
               <p style={{ color: "var(--text-sec)", fontSize: "14px", marginTop: "4px" }}>Visualise your strength gains over time</p>
             </div>
             <div style={S.card}>
               <ProgressionChart workouts={workouts} />
             </div>
-
-            {/* Per-exercise PR summary table */}
             {stats.topPRs.length > 0 && (
               <div style={{ ...S.card, marginTop: "16px" }}>
                 <div style={{ fontSize: "11px", color: "var(--text-sec)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: "16px" }}>All-time PRs with estimated 1RM</div>
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-                    <thead>
-                      <tr>
-                        {["Exercise","Group","Best Weight","Sets×Reps","Est. 1RM","Date"].map(h => (
-                          <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: "11px", color: "var(--text-ter)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid var(--border)" }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
+                    <thead><tr>
+                      {["Exercise","Group","Best Weight","Sets×Reps","Est. 1RM","Date"].map(h => (
+                        <th key={h} style={{ textAlign: "left", padding: "8px 10px", fontSize: "11px", color: "var(--text-ter)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", borderBottom: "1px solid var(--border)" }}>{h}</th>
+                      ))}
+                    </tr></thead>
                     <tbody>
                       {stats.topPRs.map((pr, i) => {
-                        const raw = workouts.filter(w => w.exercise === pr.exercise && w.weight === pr.weight)[0];
-                        const orm = raw ? epley1RM(raw.weight, raw.reps) : "—";
+                        const raw = workouts.find(w => w.exercise === pr.exercise && w.weight === pr.weight);
+                        const orm = raw ? epley1RM(raw.weight, raw.reps) : null;
                         return (
                           <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}
                             onMouseEnter={e => e.currentTarget.style.background = "var(--bg-card-hov)"}
-                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                          >
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                             <td style={{ padding: "10px", color: "var(--text)", fontWeight: 600 }}>{pr.exercise}</td>
-                            <td style={{ padding: "10px" }}><span style={{ background: `${GROUP_COLORS[pr.group] || "#6b7280"}22`, color: GROUP_COLORS[pr.group] || "#6b7280", padding: "2px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>{pr.group}</span></td>
+                            <td style={{ padding: "10px" }}><span style={{ background: `${GROUP_COLORS[pr.group]||"#6b7280"}22`, color: GROUP_COLORS[pr.group]||"#6b7280", padding: "2px 8px", borderRadius: "6px", fontSize: "11px", fontWeight: 700 }}>{pr.group}</span></td>
                             <td style={{ padding: "10px", fontFamily: "monospace", color: "var(--accent)", fontWeight: 700 }}>{fmtWeight(pr.weight)}</td>
                             <td style={{ padding: "10px", color: "var(--text-sec)", fontFamily: "monospace" }}>{raw ? `${raw.sets}×${raw.reps}` : "—"}</td>
                             <td style={{ padding: "10px", fontFamily: "monospace", color: "#f97316", fontWeight: 700 }}>{orm ? `${orm} lbs` : "—"}</td>
@@ -977,10 +1191,10 @@ export default function App() {
           </div>
         )}
 
-        {/* ── LOG ──────────────────────────────────────────────────────────── */}
+        {/* ── LOG ───────────────────────────────────────────────────────────── */}
         {activeTab === "log" && (
           <div style={{ maxWidth: "520px", margin: "0 auto" }}>
-            <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", marginBottom: "8px", color: "var(--text)" }}>
+            <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", marginBottom: "8px" }}>
               {editingId ? "Edit Workout" : "Log a Workout"}
             </h2>
             <p style={{ color: "var(--text-sec)", fontSize: "14px", marginBottom: "28px" }}>
@@ -988,74 +1202,69 @@ export default function App() {
             </p>
             <form onSubmit={handleSubmit}>
               <div style={{ display: "grid", gap: "12px" }}>
-                <div>
-                  <label style={S.label}>Athlete</label>
-                  <input name="user" placeholder="Your name" value={formData.user} required
-                    onChange={e => setFormData({ ...formData, user: e.target.value })}
-                    style={S.input}
-                    onFocus={e => e.target.style.borderColor = "var(--accent)"}
-                    onBlur={e => e.target.style.borderColor = "var(--border-in)"}
-                  />
-                </div>
+                {/* Exercise + live group preview */}
                 <div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
                     <label style={{ ...S.label, margin: 0 }}>Exercise</label>
                     {previewGroup && (
-                      <div style={{
-                        display: "inline-flex", alignItems: "center", gap: "5px",
-                        padding: "3px 10px", borderRadius: "99px", fontSize: "11px", fontWeight: 700,
-                        background: `${groupColor}20`, border: `1px solid ${groupColor}50`, color: groupColor,
-                        transition: "all 0.2s",
-                      }}>
+                      <div style={{ padding: "3px 10px", borderRadius: "99px", fontSize: "11px", fontWeight: 700, background: `${groupColor}20`, border: `1px solid ${groupColor}50`, color: groupColor }}>
                         {previewGroup}
                       </div>
                     )}
                   </div>
-                  <input name="exercise" placeholder="e.g. Bench Press, Bulgarian Split Squat…" value={formData.exercise} required
+                  <input placeholder="e.g. Bench Press, Squat, Plank…" value={formData.exercise} required
                     onChange={e => setFormData({ ...formData, exercise: e.target.value })}
                     style={S.input}
                     onFocus={e => e.target.style.borderColor = "var(--accent)"}
-                    onBlur={e => e.target.style.borderColor = "var(--border-in)"}
+                    onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
                   />
                 </div>
+
+                {/* Sets / Reps / Weight */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px" }}>
                   {[
-                    { name: "sets", placeholder: "3", label: "Sets", type: "number", min: "1" },
-                    { name: "reps", placeholder: "10", label: "Reps", type: "number", min: "1" },
-                    { name: "weight", placeholder: "0", label: "Weight (lbs)", type: "number", min: "0", step: "0.5" },
-                  ].map(({ name, placeholder, label, type, min, step }) => (
+                    { name: "sets",   label: "Sets",         placeholder: "3",  type: "number", min: "1" },
+                    { name: "reps",   label: "Reps",         placeholder: "10", type: "number", min: "1" },
+                    { name: "weight", label: "Weight (lbs)", placeholder: "0",  type: "number", min: "0", step: "0.5" },
+                  ].map(({ name, label, placeholder, type, min, step }) => (
                     <div key={name}>
                       <label style={S.label}>
-                        {label}{name === "weight" && <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}> (opt)</span>}
+                        {label}
+                        {name === "weight" && <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}> (opt)</span>}
                       </label>
-                      <input name={name} type={type} placeholder={placeholder} value={formData[name]}
-                        required={name !== "weight"} min={min} step={step}
+                      <input
+                        name={name} type={type} placeholder={placeholder}
+                        value={formData[name]} required={name !== "weight"}
+                        min={min} step={step}
                         onChange={e => setFormData({ ...formData, [e.target.name]: e.target.value })}
                         style={S.input}
                         onFocus={e => e.target.style.borderColor = "var(--accent)"}
-                        onBlur={e => e.target.style.borderColor = "var(--border-in)"}
+                        onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
                       />
                     </div>
                   ))}
                 </div>
+
+                {/* Notes */}
                 <div>
-                  <label style={S.label}>
-                    Notes <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}>(optional)</span>
-                  </label>
-                  <input name="notes" placeholder="PR? How did it feel?" value={formData.notes}
+                  <label style={S.label}>Notes <span style={{ color: "var(--text-ter)", fontWeight: 400, textTransform: "none" }}>(optional)</span></label>
+                  <input placeholder="PR? How did it feel?" value={formData.notes}
                     onChange={e => setFormData({ ...formData, notes: e.target.value })}
                     style={S.input}
                     onFocus={e => e.target.style.borderColor = "var(--accent)"}
-                    onBlur={e => e.target.style.borderColor = "var(--border-in)"}
+                    onBlur={e  => e.target.style.borderColor = "var(--border-in)"}
                   />
                 </div>
+
                 <div style={{ display: "flex", gap: "10px", marginTop: "4px" }}>
                   <button type="submit" disabled={submitting} style={{
-                    flex: 1, background: "linear-gradient(135deg, var(--accent), var(--accent-dk))", color: "var(--accent-text)",
-                    border: "none", borderRadius: "12px", padding: "13px",
+                    flex: 1, background: "linear-gradient(135deg, var(--accent), var(--accent-dk))",
+                    color: "var(--accent-text)", border: "none", borderRadius: "12px", padding: "13px",
                     fontSize: "14px", fontWeight: 700, cursor: submitting ? "not-allowed" : "pointer",
-                    letterSpacing: "0.02em", opacity: submitting ? 0.7 : 1, transition: "opacity 0.15s",
-                  }}>{submitting ? "Saving…" : editingId ? "Save Changes" : "Log Workout"}</button>
+                    opacity: submitting ? 0.7 : 1, transition: "opacity 0.15s",
+                  }}>
+                    {submitting ? "Saving…" : editingId ? "Save Changes" : "Log Workout"}
+                  </button>
                   {editingId && (
                     <button type="button" onClick={() => { setFormData(EMPTY_FORM); setEditingId(null); }} style={{
                       background: "var(--bg-input)", border: "1px solid var(--border-in)",
@@ -1069,22 +1278,18 @@ export default function App() {
           </div>
         )}
 
-        {/* ── HISTORY ──────────────────────────────────────────────────────── */}
+        {/* ── HISTORY ───────────────────────────────────────────────────────── */}
         {activeTab === "history" && (
           <div>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "24px", flexWrap: "wrap", gap: "12px" }}>
               <div>
-                <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0, color: "var(--text)" }}>Workout History</h2>
+                <h2 style={{ fontSize: "26px", fontWeight: 800, letterSpacing: "-0.8px", margin: 0 }}>Workout History</h2>
                 <p style={{ color: "var(--text-sec)", fontSize: "14px", marginTop: "4px" }}>{filtered.length} workout{filtered.length !== 1 ? "s" : ""} found</p>
               </div>
-              <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-                <select value={filterUser} onChange={e => setFilterUser(e.target.value)} style={{ ...S.input, width: "auto", padding: "8px 12px", fontSize: "13px" }}>
-                  {users.map(u => <option key={u} value={u}>{u === "All" ? "All Athletes" : u}</option>)}
-                </select>
-                <select value={filterGroup} onChange={e => setFilterGroup(e.target.value)} style={{ ...S.input, width: "auto", padding: "8px 12px", fontSize: "13px" }}>
-                  {groups.map(g => <option key={g} value={g}>{g === "All" ? "All Groups" : g}</option>)}
-                </select>
-              </div>
+              <select value={filterGroup} onChange={e => setFilterGroup(e.target.value)}
+                style={{ ...S.input, width: "auto", padding: "8px 12px", fontSize: "13px" }}>
+                {groups.map(g => <option key={g} value={g}>{g === "All" ? "All Groups" : g}</option>)}
+              </select>
             </div>
             {loading ? (
               <div style={{ textAlign: "center", color: "var(--text-ter)", padding: "64px" }}>Loading…</div>
@@ -1092,17 +1297,16 @@ export default function App() {
               <div style={{ textAlign: "center", padding: "64px", color: "var(--text-ter)" }}>
                 <div style={{ fontSize: "40px", marginBottom: "12px" }}>🏋️</div>
                 <div style={{ fontSize: "15px", fontWeight: 600 }}>No workouts found</div>
-                <div style={{ fontSize: "13px", marginTop: "6px" }}>Try adjusting your filters</div>
+                <div style={{ fontSize: "13px", marginTop: "6px" }}>Try adjusting your filter, or log a workout</div>
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                {filtered.map(w => (
-                  <WorkoutCard key={w.id} workout={w} onEdit={handleEdit} onDelete={handleDelete} />
-                ))}
+                {filtered.map(w => <WorkoutCard key={w.id} workout={w} onEdit={handleEdit} onDelete={handleDelete} />)}
               </div>
             )}
           </div>
         )}
+
       </div>
     </div>
   );
